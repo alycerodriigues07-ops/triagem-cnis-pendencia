@@ -1,5 +1,6 @@
 import streamlit as st
 import sqlite3
+import base64
 from anthropic import Anthropic
 from datetime import datetime
 
@@ -73,20 +74,31 @@ with aba_nova:
     with col2:
         cpf = st.text_input("CPF (Apenas números)")
         
-    dados_cnis = st.text_area("Cole aqui o texto do CNIS / Relatórios Previdenciários", height=300)
+    # NOVO BOTÃO DE UPLOAD DE ARQUIVOS (Suporta PDF, Word e Imagens)
+    arquivo_enviado = st.file_uploader(
+        "Arraste ou selecione o arquivo do CNIS / Relatório Previdenciário (PDF, Word, JPG, PNG)", 
+        type=["pdf", "docx", "txt", "png", "jpg", "jpeg"]
+    )
     
     if st.button("🚀 Executar Triagem Inteligente"):
         if not api_key:
             st.error("Por favor, insira sua Chave de API do Claude na barra lateral esquerda.")
-        elif not nome or not cpf or not dados_cnis:
-            st.warning("Preencha todos os campos (Nome, CPF e texto do CNIS) antes de iniciar.")
+        elif not nome or not cpf:
+            st.warning("Por favor, preencha o Nome e o CPF do cliente antes de iniciar.")
+        elif not arquivo_enviado:
+            st.warning("Por favor, anexe um arquivo (PDF, Word ou Imagem) para que o sistema possa analisar.")
         else:
-            with st.spinner("O Claude está analisando o CNIS linha por linha... Por favor, aguarde."):
+            with st.spinner("O Claude está extraindo e analisando as informações do seu documento... Por favor, aguarde."):
                 try:
                     client = Anthropic(api_key=api_key)
                     
+                    # Prepara o arquivo enviado para a API
+                    bytes_arquivo = arquivo_enviado.read()
+                    extensao = arquivo_enviado.name.split(".")[-1].lower()
+                    
+                    # Definição do comportamento do Claude
                     prompt_sistema = """
-                    Atue como um sistema especialista em Triagem Previdenciária Automatizada. Sua função é receber o CNIS e realizar uma varredura baseada no checklist.
+                    Atue como um sistema especialista em Triagem Previdenciária Automatizada. Sua função é analisar o documento anexado (CNIS, CTPS ou extratos) e realizar uma varredura baseada no checklist técnico.
                     DIRETRIZ CRÍTICA: Você NUNCA deve concluir que o segurado 'não tem direito'. Se faltar dados ou requisitos, aponte como: 'Em razão de [elemento], considera-se que há uma pendência para considerar o benefício'.
                     
                     Formate a saída rigorosamente em Markdown com:
@@ -97,14 +109,43 @@ with aba_nova:
                     ## 4. Plano de Ação & Próximos Passos
                     """
                     
+                    # Se for imagem, envia como bloco de imagem nativo do Claude
+                    if extensao in ["png", "jpg", "jpeg"]:
+                        tipo_midia = f"image/{'jpeg' if extensao in ['jpg', 'jpeg'] else 'png'}"
+                        base64_imagem = base64.b64encode(bytes_arquivo).decode("utf-8")
+                        conteudo_mensagem = [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": tipo_midia,
+                                            "data": base64_imagem
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": "Analise esta imagem de documento previdenciário de acordo com as regras estabelecidas."
+                                    }
+                                ]
+                            }
+                        ]
+                    else:
+                        # Se for PDF, Word ou Texto, lê o conteúdo textual e envia envolto em tags
+                        texto_extraido = bytes_arquivo.decode("utf-8", errors="ignore")
+                        conteudo_mensagem = [
+                            {"role": "user", "content": f"<dados_documento>\n{texto_extraido}\n</dados_documento>"}
+                        ]
+                    
+                    # Chamada oficial para a API do Claude 3.5 Sonnet
                     message = client.messages.create(
                         model="claude-3-5-sonnet-20241022",
                         max_tokens=4000,
                         temperature=0.1,
                         system=prompt_sistema,
-                        messages=[
-                            {"role": "user", "content": f"<dados_cnis>\n{dados_cnis}\n</dados_cnis>"}
-                        ]
+                        messages=conteudo_mensagem
                     )
                     
                     resultado_markdown = message.content.text
@@ -113,7 +154,7 @@ with aba_nova:
                     st.markdown(resultado_markdown)
                     
                 except Exception as e:
-                    st.error(f"Erro ao processar com a API do Claude: {e}")
+                    st.error(f"Erro ao processar o arquivo com a API do Claude: {e}")
 
 with aba_historico:
     if 'visualizar_relatorio' in st.session_state:
